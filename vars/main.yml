@@ -1,0 +1,16 @@
+---
+_platformsh_deploy_defaults:
+  source:
+    git_dir: ''
+    git_branch: 'main'
+  target:
+    clone_delete: yes
+    ssh_key_base64: ''
+    ssh_pub_base64: ''
+    platformsh_cli_key: ''
+    project_id: ''
+    env_id: ''
+    repo_url: ''
+    git_branch: 'master'
+    git_commit_message: 'Commit by ten7.platformsh_deploy'
+    git_force_push: true

@@ -1,0 +1,2 @@
+---
+platformsh_deploy: "{{ _platformsh_deploy_defaults }}"

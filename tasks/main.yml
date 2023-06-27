@@ -1,0 +1,144 @@
+---
+- name: Smoke test the environment
+  fail:
+    msg: "The platformsh_deploy variable is undefined or missing required parameters."
+  when: "\
+        (platformsh_deploy.source.git_dir is not defined) or \
+        (platformsh_deploy.target.ssh_key_base64 is not defined) or \
+        (platformsh_deploy.target.ssh_pub_base64 is not defined) or \
+        (platformsh_deploy.target.repo_url is not defined) or \
+        (platformsh_deploy.target.git_branch is not defined) \
+        "
+
+- name: Create a temp directory to store files needed by the run
+  notify: delete temp items
+  tempfile:
+    state: directory
+    prefix: "platformsh-deploy-"
+  register: _run_temp_dir
+
+- name: Set target build directory
+  set_fact:
+    _run_dir: "{{ _run_temp_dir.path }}"
+
+- name: Copy the key to the temp dir
+  copy:
+    content: "{{ item.data | b64decode }}"
+    dest: "{{ item.dest }}"
+    mode: "0600"
+  loop:
+    - data: "{{ platformsh_deploy.target.ssh_key_base64 }}"
+      dest: "{{ _run_dir }}/id_ssh"
+    - data: "{{ platformsh_deploy.target.ssh_pub_base64 }}"
+      dest: "{{ _run_dir }}/id_ssh.pub"
+  no_log: "{{ platformsh_deploy.debug | default(false) | bool != true }}"
+
+- name: Check if the target branch exists
+  shell: >
+    git ls-remote --exit-code --heads {{ platformsh_deploy.target.repo_url }} {{ platformsh_deploy.target.git_branch }}
+  ignore_errors: yes
+  environment:
+    GIT_SSH_COMMAND: "ssh -i {{ _run_dir }}/id_ssh -o StrictHostKeyChecking=accept-new -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa"
+  register: _target_branch_exists
+
+- name: Clone branch from upstream
+  ansible.builtin.git:
+    repo: "{{ platformsh_deploy.target.repo_url }}"
+    dest: "{{ _run_dir }}/src"
+    clone: yes
+    force: yes
+    recursive: yes
+    bare: no
+    update: yes
+    accept_hostkey: yes
+    ssh_opts: "-o IdentityFile={{ _run_dir }}/id_ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa"
+    key_file: "{{ _run_dir }}/id_ssh"
+    version: "{% if _target_branch_exists.rc == 0 %}\
+              {{ platformsh_deploy.target.git_branch }}\
+              {% else %}\
+              master\
+              {% endif %}"
+  environment:
+    GIT_TERMINAL_PROMPT: 0
+
+- name: Create upstream branch unless it already exists
+  shell: >
+    git switch -C {{ platformsh_deploy.target.git_branch }}
+  args:
+    chdir: "{{ _run_dir }}/src/"
+  when:
+    - _target_branch_exists.rc != 0
+  environment:
+    GIT_SSH_COMMAND: "ssh -i {{ _run_dir }}/id_ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa"
+
+- name: Copy changes to upstream
+  ansible.posix.synchronize:
+    src: "{{ platformsh_deploy.source.git_dir }}/"
+    dest: "{{ _run_dir }}/src/"
+    delete: "{{ platformsh_deploy.target.clone_delete | default('yes') }}"
+    archive: yes
+    rsync_opts: "--exclude=.git/"
+  delegate_to: localhost
+
+- name: Check if .gitignore-platformsh exists
+  stat:
+    name: "{{ platformsh_deploy.source.git_dir }}/.gitignore-platformsh"
+  register: _gitignore_platformsh
+
+- name: Overwrite .gitignore on target if .gitignore-platformsh exists
+  copy:
+    src: "{{ platformsh_deploy.source.git_dir }}/.gitignore-platformsh"
+    dest: "{{ _run_dir }}/src/.gitignore"
+  when:
+    - _gitignore_platformsh.stat.exists == true
+
+- name: Do custom build tasks if any
+  include_tasks: "{{ item }}"
+  loop: "{{ platformsh_deploy.build.include_tasks | default([]) }}"
+
+- name: Check if there are git changes
+  shell: >
+    git status --porcelain
+  args:
+    chdir: "{{ _run_dir }}/src/"
+  register: _git_status
+
+- name: "Set git user.email for the target repo"
+  community.general.git_config:
+    name: user.email
+    repo: "{{ _run_dir }}/src/"
+    scope: local
+    value: "{{ platformsh_deploy.target.git_user_email | default('bot@example.com') }}"
+
+- name: "Set git user.name for the target repo"
+  community.general.git_config:
+    name: user.name
+    repo: "{{ _run_dir }}/src/"
+    scope: local
+    value: "{{ platformsh_deploy.target.git_user_name | default('Bot') }}"
+
+- name: Add, commit, and push upstream if changes
+  shell: >
+    git add -A &&
+    git commit -m "{{ _message }}" &&
+    git push -u origin {{ platformsh_deploy.target.git_branch }}
+  args:
+    chdir: "{{ _run_dir }}/src/"
+  vars:
+    _message: "{{ platformsh_deploy.target.git_commit_message | default('_platformsh_deploy_defaults.target.git_commit_message') }}"
+  environment:
+    GIT_SSH_COMMAND: "ssh -i {{ _run_dir }}/id_ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa"
+  when: ( _git_status.stdout | default('') != '' ) and ( 'nothing to commit, working tree clean' not in _git_status.stdout ) and (platformsh_deploy.target.git_force_push | default(true) != true)
+
+- name: Add, commit, and force push upstream changes
+  shell: >
+    git add -A &&
+    git commit -m "{{ _message }}" &&
+    git push -u origin {{ platformsh_deploy.target.git_branch }} --force
+  args:
+    chdir: "{{ _run_dir }}/src/"
+  vars:
+    _message: "{{ platformsh_deploy.target.git_commit_message | default('_platformsh_deploy_defaults.target.git_commit_message') }}"
+  environment:
+    GIT_SSH_COMMAND: "ssh -i {{ _run_dir }}/id_ssh -o PubkeyAcceptedAlgorithms=+ssh-rsa -o HostkeyAlgorithms=+ssh-rsa"
+  when: ( _git_status.stdout | default('') != '' ) and ( 'nothing to commit, working tree clean' not in _git_status.stdout ) and (platformsh_deploy.target.git_force_push | default(true) == true)

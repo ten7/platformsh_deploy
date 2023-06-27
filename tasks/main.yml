@@ -121,7 +121,7 @@
   shell: >
     git add -A &&
     git commit -m "{{ _message }}" &&
-    git push -u origin {{ platformsh_deploy.target.git_branch }}
+    git push --quiet --no-progress -u origin {{ platformsh_deploy.target.git_branch }}
   args:
     chdir: "{{ _run_dir }}/src/"
   vars:
@@ -134,7 +134,7 @@
   shell: >
     git add -A &&
     git commit -m "{{ _message }}" &&
-    git push -u origin {{ platformsh_deploy.target.git_branch }} --force
+    git push --quiet --no-progress -u origin {{ platformsh_deploy.target.git_branch }} --force
   args:
     chdir: "{{ _run_dir }}/src/"
   vars:
